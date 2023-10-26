@@ -1,0 +1,150 @@
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity CAN is
+    port (
+        clk         : in std_logic;
+        reset       : in std_logic;
+        tx_req      : in std_logic;
+        tx_data     : in std_logic_vector(7 downto 0);
+        rx_ack      : in std_logic;
+		  tx_abort       : in std_logic;
+        rx_data     : in std_logic_vector(7 downto 0);
+        rx_valid    : out std_logic;
+        rx_abort    : out std_logic;
+        rx_req      : out std_logic;
+        tx_ack      : out std_logic;
+        tx_data_out : out std_logic_vector(7 downto 0));
+end CAN;
+
+architecture CAN_Controller of CAN is
+    -- Internal signals and registers
+    signal tx_state     : std_logic_vector(1 downto 0) := "00";
+    signal tx_data_reg  : std_logic_vector(7 downto 0);
+    signal tx_valid_reg : std_logic := '0';
+    signal rx_state     : std_logic_vector(1 downto 0) := "00";
+    signal rx_data_reg  : std_logic_vector(7 downto 0);
+    signal rx_valid_reg : std_logic := '0';
+    signal bus_owner    : std_logic_vector(1 downto 0) := "00";
+    signal tx_requested : std_logic_vector(1 downto 0) := "00";
+    signal tx_granted   : std_logic_vector(1 downto 0) := "00";
+    signal tx_message_id: std_logic_vector(10 downto 0);
+    signal rx_message_id: std_logic_vector(10 downto 0);
+
+begin
+    -- Transmit State Machine
+    process(clk, reset)
+    begin
+        if reset = '1' then
+            tx_state <= "00";
+            tx_data_reg <= (others => '0');
+            tx_valid_reg <= '0';
+        elsif rising_edge(clk) then
+            case tx_state is
+                when "00" =>
+                    if tx_req = '1' then
+                        tx_state <= "01";
+								tx_valid_reg <= '1';
+                        tx_data_reg <= tx_data;
+								tx_requested <= "01";
+                    end if;
+                when "01" =>
+                    if tx_abort = '1' or (tx_requested = "10" and tx_granted = "01") then
+                        tx_state <= "00";
+                        tx_valid_reg <= '0';
+                        tx_requested <= "00";
+                    elsif tx_requested = "01" and tx_granted = "10" then
+                        tx_state <= "10";
+                        tx_granted <= "01";
+                    end if;
+                when "10" =>
+                    tx_state <= "00";
+                    tx_valid_reg <= '0';
+                    tx_granted <= "00";
+                when others =>
+                    tx_state <= "00";
+                    tx_valid_reg <= '0';
+            end case;
+        end if;
+    end process;
+	 
+	 -- Receive State Machine
+	 process(clk, reset)
+	 begin
+		if reset = '1' then
+        rx_state <= "00";
+        rx_data_reg <= (others => '0');
+        rx_valid_reg <= '0';
+		elsif rising_edge(clk) then
+        case rx_state is
+            when "00" =>
+                if rx_req = '1' then
+                    rx_state <= "01";
+                    rx_valid_reg <= '0';
+                end if;
+            when "01" =>
+                if rx_valid = '1' then
+                    rx_data_reg <= rx_data;
+                    rx_valid_reg <= '1';
+                    if rx_abort = '1' then
+                        rx_state <= "10";
+                    else
+                        rx_state <= "11";
+                    end if;
+                end if;
+            when "11" =>
+                if rx_req = '1' then
+                    rx_state <= "01";
+                    rx_valid_reg <= '0';
+                else
+                    rx_state <= "00";
+                    rx_valid_reg <= '0';
+                end if;
+            when "10" =>
+                if rx_req = '1' then
+                    rx_state <= "01";
+                    rx_valid_reg <= '0';
+                else
+                    rx_state <= "00";
+                    rx_valid_reg <= '0';
+                end if;
+            when others =>
+                rx_state <= "00";
+                rx_valid_reg <= '0';
+        end case;
+		end if;
+	 end process;
+	 
+    -- Arbitration
+    process(clk)
+    begin
+        if rising_edge(clk) then
+            if tx_req = '1' and (tx_state = "00" or tx_state = "10") then
+                tx_requested <= "01";
+            elsif tx_abort = '1' or (tx_requested = "10" and tx_granted = "01") then
+                tx_requested <= "00";
+            elsif tx_requested = "01" and tx_granted = "10" then
+                tx_granted <= "01";
+            end if;
+
+            if tx_granted = "00" and (bus_owner = "00" or tx_message_id < rx_message_id) then
+                tx_granted <= "10";
+				else
+					tx_granted <= "00";
+            end if;
+
+            if bus_owner = "01" and (tx_granted = "10" or tx_state = "10") then
+                bus_owner <= "00";
+            end if;
+
+            if bus_owner = "00" and tx_granted = "10" then
+                bus_owner <= "01";
+            end if;
+        end if;
+    end process;
+
+    -- Output assignments
+    tx_data_out <= tx_data_reg;
+
+end CAN_Controller;
